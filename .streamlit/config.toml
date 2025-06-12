@@ -1,0 +1,13 @@
+# .streamlit/config.toml
+[theme]
+# Barva pozadí celé Streamlit aplikace
+backgroundColor="#FFFFFF" # Bílá
+
+# Barva textu v celé aplikaci
+textColor="#000000"       # Černá
+
+# Primární barva (pro tlačítka, odkazy, atd.)
+primaryColor="#FF4B4B"    # Streamlit's default red, or choose your own (e.g., "#007bff" for blue)
+
+# Sekundární barva pozadí (pro sidebar, vybrané widgety)
+secondaryBackgroundColor="#F0F2F6" # Světle šedá, aby sidebar nebyl také čistě bílý a odlišil se
