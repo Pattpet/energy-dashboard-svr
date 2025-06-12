@@ -82,6 +82,13 @@ else:
     bid_curve_filter_hour_utc = aware_dt_local_bid_filter.astimezone(pytz.utc).replace(tzinfo=None).hour
 
 
+# Nová sekce v sidebar - "Made by" s proklikem a ikonou LinkedIn
+st.sidebar.markdown("---") # Další oddělovač pro přehlednost
+st.sidebar.markdown(
+    f'<span style="color: rgb(255, 153, 0);">Made by <b><a href="https://www.linkedin.com/in/patrikpetovsky/" target="_blank" style="color: rgb(255, 153, 0); text-decoration: none;">Patrik Petovsky</a></b> <img src="https://upload.wikimedia.org/wikipedia/commons/c/ca/LinkedIn_logo_initials.png" width="20" height="20" style="vertical-align: middle;"></span>', 
+    unsafe_allow_html=True
+)
+
 # --- Konverze lokální vybrané hodiny na UTC hodinu pro Day-Ahead čáru a grafy kapacity ---
 naive_dt_local_day_ahead_line = datetime(selected_date.year, selected_date.month, selected_date.day, selected_hour_local, 0, 0)
 aware_dt_local_day_ahead_line = user_tz.localize(naive_dt_local_day_ahead_line, is_dst=None) 
@@ -271,9 +278,3 @@ with col2_row2:
 
 
 
-# Nová sekce v sidebar - "Made by" s proklikem a ikonou LinkedIn
-st.sidebar.markdown("---") # Další oddělovač pro přehlednost
-st.sidebar.markdown(
-    f'<span style="color: rgb(255, 153, 0);">Made by <b><a href="https://www.linkedin.com/in/patrikpetovsky/" target="_blank" style="color: rgb(255, 153, 0); text-decoration: none;">Patrik Petovsky</a></b> <img src="https://upload.wikimedia.org/wikipedia/commons/c/ca/LinkedIn_logo_initials.png" width="20" height="20" style="vertical-align: middle;"></span>', 
-    unsafe_allow_html=True
-)
