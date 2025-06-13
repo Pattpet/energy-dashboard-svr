@@ -77,14 +77,14 @@ def _prepare_capacity_for_plot(df_group_raw: pd.DataFrame, direction: str, price
     df_group = df_group_raw.groupby(['Timestamp', price_col, 'Direction'], as_index=False)[power_col].sum()
     
     df_group_sorted = df_group.sort_values(by=[price_col, power_col], ascending=[True, True])
+
+    price_for_zero = df_group_sorted[price_col].min()
     
     df_group_sorted[f"Cumulative {power_col}"] = df_group_sorted[power_col].cumsum()
 
     # Zajištění, že df_group_sorted není prázdné před přístupem k .iloc[0]
     if df_group_sorted.empty:
         return pd.DataFrame(), 0.0
-        
-    price_for_zero = df_group_sorted[price_col].min()
     
     zero_point_data = {
         "Timestamp": df_group_sorted["Timestamp"].iloc[0], 
