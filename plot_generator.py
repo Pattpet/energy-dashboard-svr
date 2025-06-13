@@ -86,14 +86,23 @@ def _prepare_capacity_for_plot(df_group_raw: pd.DataFrame, direction: str, price
     if df_group_sorted.empty:
         return pd.DataFrame(), 0.0
     
+    prices_above_zero = df_group_sorted[df_group_sorted[price_col] > 0]
+    if not prices_above_zero.empty:
+        price_for_zero = prices_above_zero[price_col].min()
+        timestamp_for_zero = prices_above_zero["Timestamp"].iloc[0]
+    else:
+        price_for_zero = df_group_sorted[price_col].min()
+        timestamp_for_zero = df_group_sorted["Timestamp"].iloc[0]
+
     zero_point_data = {
-        "Timestamp": df_group_sorted["Timestamp"].iloc[0], 
+        "Timestamp": timestamp_for_zero, 
         "Direction": direction, 
         power_col: 0.0,
         f"Cumulative {power_col}": 0.0,
         price_col: price_for_zero
     }
     zero_point = pd.DataFrame([zero_point_data])
+
     
     final_df = pd.concat([zero_point, df_group_sorted], ignore_index=True)
     final_df = final_df.drop_duplicates(subset=['Timestamp', 'Direction', f"Cumulative {power_col}", price_col])
