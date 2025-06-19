@@ -1,0 +1,22 @@
+# Ignoruje virtuální prostředí
+venv/
+
+# Ignoruje soubor Streamlit secrets.toml (obsahuje API klíče)
+.streamlit/secrets.toml
+
+# Ignoruje Pythoní bytecode (automaticky generované soubory)
+__pycache__/
+*.pyc
+*.pyd
+*.so
+
+# Ignoruje lokální nastavení IDE (např. VS Code) - volitelné, pokud nechceš sdílet IDE nastavení
+.vscode/
+
+# Ignoruje systémové soubory generované operačním systémem
+.DS_Store
+Thumbs.db
+
+# Ignoruje jakékoli dočasné/logovací soubory (pokud bys je v budoucnu tvořil)
+*.log
+*.tmp
