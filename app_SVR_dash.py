@@ -11,18 +11,6 @@ import base64
 import data_loader as dl 
 import plot_generator as pg 
 
-# Funkce pro načtení a zakódování lokálního obrázku
-@st.cache_data
-def get_img_as_base64(file):
-    with open(file, "rb") as f:
-        data = f.read()
-    return base64.b64encode(data).decode()
-
-
-img = get_img_as_base64("assets/logo.svg")
-
-
-
 # TOTO MUSÍ BÝT ABSOLUTNĚ PRVNÍ PŘÍKAZ STREAMLITU V CELÉM SKRIPTU.
 st.set_page_config(
     layout="wide",
@@ -30,6 +18,15 @@ st.set_page_config(
     page_icon="⚡",
     initial_sidebar_state="expanded"
 )
+
+# Funkce pro načtení a zakódování lokálního obrázku
+@st.cache_data
+def get_img_as_base64(file):
+    with open(file, "rb") as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
+
+img = get_img_as_base64("assets/logo.svg")
 
 # Vytvoření sloupců pro hlavičku
 col1, col2, col3 = st.columns([5, 1, 1])
@@ -113,7 +110,7 @@ else:
 
 st.sidebar.markdown("---") 
 st.sidebar.markdown(
-    f'<span style="color: rgb(255, 153, 0);">Made by <b><a href="https://www.linkedin.com/in/patrikpetovsky/" target="_blank" style="color: rgb(255, 153, 0); text-decoration: none;">Patrik Petovsky</a></b> <img src="https://upload.wikimedia.org/wikipedia/commons/c/ca/LinkedIn_logo_initials.png" width="20" height="20" style="vertical-align: middle;"></span>', 
+    f'<span style="color: rgb(255, 153, 0);">by <b><a href="https://www.linkedin.com/in/patrikpetovsky/" target="_blank" style="color: rgb(255, 153, 0); text-decoration: none;">Patrik Petovsky</a></b> <img src="https://upload.wikimedia.org/wikipedia/commons/c/ca/LinkedIn_logo_initials.png" width="20" height="20" style="vertical-align: middle;"></span>', 
     unsafe_allow_html=True
 )
 
