@@ -200,7 +200,8 @@ col1_row1, col2_row1 = st.columns(2)
 
 with col1_row1:
     st.subheader("Ceny elektřiny na denním trhu a cen aktivace aFRR") # Zpět na subheader
-
+    st.write("")  
+    st.write("")  
     st.write("")  
     st.write("")  
     st.write("")  
@@ -224,7 +225,7 @@ with col2_row1:
         index=0, # Defaultně Central Selection
         horizontal=True,
         key="agg_bids_radio", # Přidán key pro unikátnost
-        help="Central Selection (A67) je pro celoevropské agregované nabídky, Local Selection (A68) pro lokální"
+        #help="Central Selection (A67) je pro celoevropské agregované nabídky, Local Selection (A68) pro lokální"
     )
     
     # Získání dat pro vybraný typ
@@ -254,7 +255,7 @@ col1_row2, col2_row2 = st.columns(2)
 with col1_row2:
     st.subheader(f"Nabídková křivka regulační energie (RE) aFRR pro {selected_hour_for_display:02d}:00-{selected_hour_for_display+1:02d}:00") # Zpět na subheader
     
-    # --- Vložení prázdných řádků pro zarovnání výšky grafu ---
+    # --- Vložení prázdných řádků pro zarovnání výšky grafu ---  
     st.write("")  
     st.write("")  
     st.write("")  
