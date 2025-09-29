@@ -1,15 +1,16 @@
-# app_SVR_dash.py (BEZ RÁMEČKŮ, OPTIMIZOVANÁ VERZE)
+# app_SVR_dash.py (OPRAVENO: PŘÍMÝ IMPORT eic_codes a pevná volba zemí pro ladění)
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
 import pytz
-import base64 
+import base64
 
 # Import modulů
 import data_loader as dl 
 import plot_generator as pg 
+import eic_codes # ZMĚNA ZDE: PŘÍMÝ IMPORT eic_codes (pro list_keys, i když je teď omezený)
 
 # TOTO MUSÍ BÝT ABSOLUTNĚ PRVNÍ PŘÍKAZ STREAMLITU V CELÉM SKRIPTU.
 st.set_page_config(
@@ -64,11 +65,14 @@ selected_date = st.sidebar.date_input(
 )
 
 # Vstup pro výběr země
-country_codes = ['CZ']
+country_options =  ["CZ", 
+                    #"AT",
+                    ]  # Pevná volba zemí pro ladění
+default_country_index = country_options.index('CZ') if 'CZ' in country_options else 0
 selected_country = st.sidebar.selectbox(
-    "Zatím k dispozici pouze CZ:",
-    options=country_codes,
-    index=country_codes.index('CZ')
+    "Vyberte zemi:",
+    options=country_options,
+    index=default_country_index
 )
 
 # --- Výběr směru nabídkové křivky (pevně "Oba") ---
@@ -78,7 +82,8 @@ selected_bid_direction_filter = "Oba"
 # Získání časové zóny pro selected_country pro lokální konverzi
 country_timezones_map = {
     'CZ': 'Europe/Prague',
-    'DE': 'Europe/Berlin', 
+    'PL': 'Europe/Berlin', 
+    'AT': 'Europe/Vienna', # NOVÁ ČASOVÁ ZÓNA PRO RAKOUSKO
 }
 user_tz_str = country_timezones_map.get(selected_country, 'UTC') 
 user_tz = pytz.timezone(user_tz_str)
@@ -138,55 +143,55 @@ all_data_loaded_successfully = True
 
 # Jediný status box pro všechny načítání
 with st.status("Načítání dat z ENTSOE-E API...", expanded=False) as status:
-    st.write("Načítám denní ceny...")
+    st.write(f"Načítám denní ceny pro {selected_country}...")
     day_ahead_data = dl.fetch_day_ahead_prices_data(selected_country, selected_date)
     if day_ahead_data.empty:
-        status.write("⚠️ Denní ceny nejsou dostupné pro vybrané datum.")
+        status.write(f"⚠️ Denní ceny pro {selected_country} nejsou dostupné pro vybrané datum.")
         all_data_loaded_successfully = False
     else:
-        status.write("✅ Denní ceny načteny.")
+        status.write(f"✅ Denní ceny pro {selected_country} načteny.")
     
-    st.write("Načítám ceny aktivace aFRR...")
+    st.write(f"Načítám ceny aktivace aFRR pro {selected_country}...")
     afrr_activation_data = dl.fetch_afrr_activation_prices_data(selected_date, selected_country)
     if afrr_activation_data.empty:
-        status.write("⚠️ Ceny aktivace aFRR nejsou dostupné pro vybrané datum.")
+        status.write(f"⚠️ Ceny aktivace aFRR pro {selected_country} nejsou dostupné pro vybrané datum.")
         all_data_loaded_successfully = False
     else:
-        status.write("✅ Ceny aktivace aFRR načteny.")
+        status.write(f"✅ Ceny aktivace aFRR pro {selected_country} načteny.")
 
-    st.write("Načítám rezervovanou kapacitu...")
+    st.write(f"Načítám rezervovanou kapacitu pro {selected_country}...")
     procured_capacity_data = dl.fetch_procured_capacity_data(
         target_date=selected_date,
         country_code=selected_country
     )
     if procured_capacity_data.empty:
-        status.write("⚠️ Data rezervované kapacity nejsou dostupná pro vybrané datum.")
+        status.write(f"⚠️ Data rezervované kapacity pro {selected_country} nejsou dostupná pro vybrané datum.")
         all_data_loaded_successfully = False
     else:
-        status.write("✅ Data rezervované kapacity načtena.")
+        status.write(f"✅ Data rezervované kapacity pro {selected_country} načtena.")
 
-    st.write("Načítám agregované nabídky (Central i Local Selection)...")
+    st.write(f"Načítám agregované nabídky (Central i Local Selection) pro {selected_country}...")
     all_aggregated_bids_data = dl.fetch_all_aggregated_bids_data(
         target_date=selected_date,
         country_code=selected_country
     )
     if all_aggregated_bids_data.get("A67", pd.DataFrame()).empty and all_aggregated_bids_data.get("A68", pd.DataFrame()).empty:
-        status.write("⚠️ Agregované nabídky nejsou dostupné pro vybrané datum.")
+        status.write(f"⚠️ Agregované nabídky pro {selected_country} nejsou dostupné pro vybrané datum.")
         all_data_loaded_successfully = False
     else:
-        status.write("✅ Agregované nabídky načteny.")
+        status.write(f"✅ Agregované nabídky pro {selected_country} načteny.")
 
-    st.write("Načítám balancing bids pro aFRR...")
+    st.write(f"Načítám balancing bids pro aFRR pro {selected_country}...")
     balancing_bids_afrr = dl.fetch_balancing_bids_for_day_modular(
         target_date=selected_date,
         country_code=selected_country,
         process_type="A51"
     )
     if balancing_bids_afrr.empty:
-        status.write("⚠️ Balancing bids pro aFRR nejsou dostupné pro vybrané datum.")
+        status.write(f"⚠️ Balancing bids pro aFRR pro {selected_country} nejsou dostupné pro vybrané datum.")
         all_data_loaded_successfully = False
     else:
-        status.write("✅ Balancing bids načteny.")
+        status.write(f"✅ Balancing bids pro {selected_country} načteny.")
     
     # Aktualizace finálního stavu status boxu
     if all_data_loaded_successfully:
@@ -292,7 +297,8 @@ with col2_row2:
         selected_hour_utc=selected_hour_for_day_ahead_line_and_capacity_filter_utc, 
         country=selected_country,
         display_local_hour=selected_hour_for_display,
-        show_weighted_average=show_weighted_avg_capacity 
+        show_weighted_average=show_weighted_avg_capacity,
+        user_tz_str=user_tz_str # <--- TOTO JE DŮLEŽITÉ!
     )
     st.plotly_chart(fig_proc_capacity_curve, use_container_width=True) 
 
@@ -301,6 +307,3 @@ with col2_row2:
     #         st.dataframe(cumulative_proc_capacity_data_for_display)
     #     else:
     #         st.info("Žádná kumulovaná data kapacity pro zobrazení.")
-
-
-

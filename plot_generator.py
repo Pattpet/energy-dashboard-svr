@@ -1,11 +1,11 @@
-# plot_generator.py (UPRAVENO pro vodoznak s logem)
+# plot_generator.py (FINÁLNÍ OPRAVENÁ VERZE s mediánovou cenou pro aFRR graf a opraveným rozbalením tuple)
 
-import streamlit as st 
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-from datetime import datetime, timedelta
-import pytz 
+from datetime import datetime, timedelta, date
+import pytz
 import logging
 import base64
 from pathlib import Path
@@ -23,7 +23,7 @@ def get_logo_as_base64(logo_path: str = "assets/logo.svg") -> str | None:
     if not logo_file.is_file():
         logging.warning(f"Soubor s logem nebyl nalezen na cestě: {logo_path}")
         return None
-    
+
     encoded_logo = base64.b64encode(logo_file.read_bytes()).decode()
     return f"data:image/svg+xml;base64,{encoded_logo}"
 
@@ -31,6 +31,22 @@ def get_logo_as_base64(logo_path: str = "assets/logo.svg") -> str | None:
 Tento modul obsahuje funkce pro generování různých typů Plotly grafů.
 Přijímá připravená data (Pandas DataFrames) a vrací Plotly Figure objekty.
 """
+
+# --- POMOCNÁ FUNKCE PRO PŘEVOD UTC HODINY NA LOKÁLNÍ PRO ZOBRAZENÍ (beze změny) ---
+def _convert_utc_hour_to_local_display(utc_hour: int, target_date: date, user_tz_str: str) -> str:
+    """
+    Převede danou UTC hodinu na její lokální časový ekvivalent pro zobrazení.
+    """
+    local_tz = pytz.timezone(user_tz_str)
+    
+    # Vytvoření datetime objektu v UTC pro dané datum a hodinu
+    utc_datetime_naive = datetime(target_date.year, target_date.month, target_date.day, utc_hour, 0, 0)
+    utc_datetime_aware = pytz.utc.localize(utc_datetime_naive)
+    
+    # Převod na lokální časovou zónu
+    local_datetime_aware = utc_datetime_aware.astimezone(local_tz)
+    
+    return local_datetime_aware.strftime('%H:%M')
 
 # --- POMOCNÉ FUNKCE PRO PŘÍPRAVU DAT KUMULATIVNÍCH KŘIVEK ---
 
@@ -40,7 +56,7 @@ def _prepare_afrr_bids_for_plot(df_group_raw: pd.DataFrame, direction: str, pric
     'Up' křivka je rostoucí, 'Down' křivka je klesající.
     """
     if df_group_raw.empty:
-        return pd.DataFrame(), 0.0 
+        return pd.DataFrame(), 0.0
 
     df_group = df_group_raw.groupby(['Timestamp', price_col, 'Direction'], as_index=False)[power_col].sum()
 
@@ -53,8 +69,8 @@ def _prepare_afrr_bids_for_plot(df_group_raw: pd.DataFrame, direction: str, pric
         df_group_sorted = df_group.sort_values(by=[price_col, power_col], ascending=[False, True])
         if df_group_sorted.empty: # Defenzivní kontrola
             return pd.DataFrame(), 0.0
-        price_for_zero = df_group_sorted[price_col].max() 
-    
+        price_for_zero = df_group_sorted[price_col].max()
+
     df_group_sorted[f"Cumulative {power_col}"] = df_group_sorted[power_col].cumsum()
 
     # Zajištění, že df_group_sorted není prázdné před přístupem k .iloc[0]
@@ -62,26 +78,25 @@ def _prepare_afrr_bids_for_plot(df_group_raw: pd.DataFrame, direction: str, pric
         return pd.DataFrame(), 0.0
 
     zero_point_data = {
-        "Timestamp": df_group_sorted["Timestamp"].iloc[0], 
-        "Direction": direction, 
+        "Timestamp": df_group_sorted["Timestamp"].iloc[0],
+        "Direction": direction,
         power_col: 0.0,
         f"Cumulative {power_col}": 0.0,
         price_col: price_for_zero
     }
     zero_point = pd.DataFrame([zero_point_data])
-    
+
     final_df = pd.concat([zero_point, df_group_sorted], ignore_index=True)
     final_df = final_df.drop_duplicates(subset=['Timestamp', 'Direction', f"Cumulative {power_col}", price_col])
-    
-    final_df = final_df.sort_values(by=[price_col, f"Cumulative {power_col}"], ascending=[direction == "Up", True])
-    
-    valid_points_for_avg = df_group[df_group[power_col] > 0]
-    weighted_average = 0.0
-    if not valid_points_for_avg.empty and valid_points_for_avg[power_col].sum() > 0:
-        weighted_average = (valid_points_for_avg[power_col] * valid_points_for_avg[price_col]).sum() / valid_points_for_avg[power_col].sum()
-    
-    return final_df, weighted_average
 
+    final_df = final_df.sort_values(by=[price_col, f"Cumulative {power_col}"], ascending=[direction == "Up", True])
+
+    valid_points_for_median = df_group[df_group[power_col] > 0]
+    median_price = 0.0
+    if not valid_points_for_median.empty:
+        median_price = valid_points_for_median[price_col].median()
+    
+    return final_df, median_price
 
 def _prepare_capacity_for_plot(df_group_raw: pd.DataFrame, direction: str, price_col: str, power_col: str) -> tuple[pd.DataFrame, float]:
     """
@@ -92,17 +107,17 @@ def _prepare_capacity_for_plot(df_group_raw: pd.DataFrame, direction: str, price
         return pd.DataFrame(), 0.0
 
     df_group = df_group_raw.groupby(['Timestamp', price_col, 'Direction'], as_index=False)[power_col].sum()
-    
+
     df_group_sorted = df_group.sort_values(by=[price_col, power_col], ascending=[True, True])
 
     price_for_zero = df_group_sorted[price_col].min()
-    
+
     df_group_sorted[f"Cumulative {power_col}"] = df_group_sorted[power_col].cumsum()
 
     # Zajištění, že df_group_sorted není prázdné před přístupem k .iloc[0]
     if df_group_sorted.empty:
         return pd.DataFrame(), 0.0
-    
+
     prices_above_zero = df_group_sorted[df_group_sorted[price_col] > 0]
     if not prices_above_zero.empty:
         price_for_zero = prices_above_zero[price_col].min()
@@ -112,36 +127,36 @@ def _prepare_capacity_for_plot(df_group_raw: pd.DataFrame, direction: str, price
         timestamp_for_zero = df_group_sorted["Timestamp"].iloc[0]
 
     zero_point_data = {
-        "Timestamp": timestamp_for_zero, 
-        "Direction": direction, 
+        "Timestamp": timestamp_for_zero,
+        "Direction": direction,
         power_col: 0.0,
         f"Cumulative {power_col}": 0.0,
         price_col: price_for_zero
     }
     zero_point = pd.DataFrame([zero_point_data])
 
-    
+
     final_df = pd.concat([zero_point, df_group_sorted], ignore_index=True)
     final_df = final_df.drop_duplicates(subset=['Timestamp', 'Direction', f"Cumulative {power_col}", price_col])
-    
+
     final_df = final_df.sort_values(by=[price_col, f"Cumulative {power_col}"], ascending=[True, True])
 
     valid_points_for_avg = df_group[df_group[power_col] > 0]
     weighted_average = 0.0
     if not valid_points_for_avg.empty and valid_points_for_avg[power_col].sum() > 0:
         weighted_average = (valid_points_for_avg[power_col] * valid_points_for_avg[price_col]).sum() / valid_points_for_avg[power_col].sum()
-    
+
     return final_df, weighted_average
 
 # --- KONEC POMOCNÝCH FUNKCÍ ---
 
 
 def create_day_ahead_price_plot(
-    df_prices: pd.DataFrame, 
-    country: str, 
-    date: datetime.date, 
+    df_prices: pd.DataFrame,
+    country: str,
+    date: datetime.date,
     user_tz_str: str,
-    df_afrr_activation_prices: pd.DataFrame = None 
+    df_afrr_activation_prices: pd.DataFrame = None
 ) -> go.Figure:
     """
     Generuje čárový graf denních cen elektřiny a cen aktivované regulační energie.
@@ -149,18 +164,18 @@ def create_day_ahead_price_plot(
     Dynamický rozsah Y osy.
     """
     local_tz = pytz.timezone(user_tz_str)
-    tz_name_for_display = datetime.now(local_tz).tzname() 
+    tz_name_for_display = datetime.now(local_tz).tzname()
 
     all_prices_df = pd.DataFrame()
-    
-    df_prices_localized = pd.DataFrame() 
+
+    df_prices_localized = pd.DataFrame()
     if not df_prices.empty:
         df_prices_localized = df_prices.copy()
         df_prices_localized['Time'] = df_prices_localized['Time'].dt.tz_localize('UTC').dt.tz_convert(local_tz)
-        
+
         all_prices_df = pd.concat([all_prices_df, df_prices_localized.rename(columns={'Price': 'Value'})[['Time', 'Value']]], ignore_index=True)
 
-    df_afrr_localized = pd.DataFrame() 
+    df_afrr_localized = pd.DataFrame()
     if df_afrr_activation_prices is not None and not df_afrr_activation_prices.empty:
         df_afrr_localized = df_afrr_activation_prices.copy()
         df_afrr_localized['Timestamp'] = df_afrr_localized['Timestamp'].dt.tz_localize('UTC').dt.tz_convert(local_tz)
@@ -170,13 +185,13 @@ def create_day_ahead_price_plot(
             if len(df_afrr_localized) > 1:
                 resolution_td = df_afrr_localized['Timestamp'].iloc[1] - df_afrr_localized['Timestamp'].iloc[0]
             else:
-                resolution_td = timedelta(minutes=15) 
-            
+                resolution_td = timedelta(minutes=15)
+
             next_timestamp = last_timestamp + resolution_td
-            
+
             last_row_plus = df_afrr_localized[df_afrr_localized['Timestamp'] == last_timestamp]['afrr_plus_price'].iloc[0] if 'afrr_plus_price' in df_afrr_localized.columns else None
             last_row_minus = df_afrr_localized[df_afrr_localized['Timestamp'] == last_timestamp]['afrr_minus_price'].iloc[0] if 'afrr_minus_price' in df_afrr_localized.columns else None
-            
+
             dummy_row = pd.DataFrame([{
                 'Timestamp': next_timestamp,
                 'afrr_plus_price': last_row_plus,
@@ -197,7 +212,7 @@ def create_day_ahead_price_plot(
                            font=dict(size=16, color="gray"))
         fig.update_layout(title=f"Ceny elektřiny a aFRR pro {country} ({date.strftime('%d.%m.%Y')})")
         return fig
-    
+
     valid_prices = all_prices_df['Value'].dropna()
     if valid_prices.empty:
         y_min, y_max = -100, 200
@@ -207,10 +222,10 @@ def create_day_ahead_price_plot(
 
         y_min = min(-10, min_val_all * 1.05)
         y_max = max_val_all * 1.05
-        
+
         if y_max <= y_min:
-            y_max = y_min + 50 
-    
+            y_max = y_min + 50
+
     fig = go.Figure()
 
     # --- PŘIDÁNÍ LOGA JAKO VODOZNAKU ---
@@ -233,53 +248,53 @@ def create_day_ahead_price_plot(
     if df_afrr_activation_prices is not None and not df_afrr_activation_prices.empty and \
        'afrr_plus_price' in df_afrr_localized.columns and df_afrr_localized['afrr_plus_price'].notna().any():
         fig.add_trace(go.Scatter(
-            x=df_afrr_localized['Timestamp'], 
+            x=df_afrr_localized['Timestamp'],
             y=df_afrr_localized['afrr_plus_price'],
             mode='lines',
             line_shape='hv',
             name="aFRR+ Cena aktivace",
-            line=dict(color='royalblue', width=1.5), 
+            line=dict(color='royalblue', width=1.5),
             hovertemplate="Čas: %{x|%H:%M}<br>aFRR+: %{y:.2f} €/MWh<extra></extra>"
         ))
 
     if df_afrr_activation_prices is not None and not df_afrr_activation_prices.empty and \
        'afrr_minus_price' in df_afrr_localized.columns and df_afrr_localized['afrr_minus_price'].notna().any():
         fig.add_trace(go.Scatter(
-            x=df_afrr_localized['Timestamp'], 
+            x=df_afrr_localized['Timestamp'],
             y=df_afrr_localized['afrr_minus_price'],
             mode='lines',
             line_shape='hv',
             name="aFRR- Cena aktivace",
-            line=dict(color='darkgreen', width=1.5), 
+            line=dict(color='darkgreen', width=1.5),
             hovertemplate="Čas: %{x|%H:%M}<br>aFRR-: %{y:.2f} €/MWh<extra></extra>"
         ))
 
     if not df_prices.empty:
         fig.add_trace(go.Scatter(
-            x=df_prices_localized['Time'], 
+            x=df_prices_localized['Time'],
             y=df_prices_localized['Price'],
             mode='lines',
             line_shape='hv',
-            name=f"Elektřina na DT", 
+            name=f"Elektřina na DT",
             line=dict(color='red', width=2.5),
             hovertemplate="Čas: %{x|%H:%M}<br>Day-Ahead: %{y:.2f} €/MWh<extra></extra>"
         ))
 
     fig.update_layout(
         title=f"Ceny elektřiny a aFRR za aktivaci pro {country} ({date.strftime('%d.%m.%Y')})",
-        xaxis_title=f"Čas ({tz_name_for_display})", 
+        xaxis_title=f"Čas ({tz_name_for_display})",
         yaxis_title="Cena (€/MWh)",
         hovermode="x unified",
         legend=dict(
             orientation="h",
-            yanchor="top", 
+            yanchor="top",
             y=-0.2,
             xanchor="center",
             x=0.5
         ),
-        yaxis=dict(range=[y_min, y_max]), 
+        yaxis=dict(range=[y_min, y_max]),
     )
-    
+
     fig.update_xaxes(
         dtick="H1",
         tickformat="%H:%M",
@@ -288,11 +303,11 @@ def create_day_ahead_price_plot(
     )
     return fig
 
-# --- NOVÁ FUNKCE: create_aggregated_bids_plot pro pozici 1,2 ---
+
 def create_aggregated_bids_plot(
-    df_agg_bids: pd.DataFrame, 
-    country: str, 
-    date: datetime.date, 
+    df_agg_bids: pd.DataFrame,
+    country: str,
+    date: datetime.date,
     user_tz_str: str,
     selected_process_type_label: str
 ) -> go.Figure:
@@ -321,7 +336,7 @@ def create_aggregated_bids_plot(
     df_agg_localized['Timestamp'] = df_agg_localized['Timestamp'].dt.tz_localize('UTC').dt.tz_convert(local_tz)
 
     fig = go.Figure()
-    
+
     # --- PŘIDÁNÍ LOGA JAKO VODOZNAKU ---
     logo_source = get_logo_as_base64("assets/logo.svg")
     if logo_source:
@@ -337,8 +352,8 @@ def create_aggregated_bids_plot(
                 layer="below"
             )
         )
-    # --- KONEC BLOKU S LOGEM ---
-    
+    # --- KONEC BLOKU S LOGU ---
+
     # aFRR+ Activated (fill + line)
     if 'afrr_plus_activated' in df_agg_localized.columns and df_agg_localized['afrr_plus_activated'].notna().any():
         fig.add_trace(go.Scatter(
@@ -348,7 +363,7 @@ def create_aggregated_bids_plot(
             fill="tozeroy", fillcolor="rgba(0, 0, 255, 0.1)",
             hovertemplate=f"Čas: %{{x|%H:%M}}<br>aFRR+ Activated: %{{y:.2f}} MW<extra></extra>"
         ))
-    
+
     # aFRR- Activated (fill + line)
     if 'afrr_minus_activated' in df_agg_localized.columns and df_agg_localized['afrr_minus_activated'].notna().any():
         fig.add_trace(go.Scatter(
@@ -368,7 +383,7 @@ def create_aggregated_bids_plot(
             hovertemplate=f"Čas: %{{x|%H:%M}}<br>aFRR+ Offered: %{{y:.2f}} MW<extra></extra>",
             visible='legendonly'
         ))
-    
+
     # aFRR- Offered (dashed line) - nyní vypnuté ve výchozím stavu
     if 'afrr_minus_offered' in df_agg_localized.columns and df_agg_localized['afrr_minus_offered'].notna().any():
         fig.add_trace(go.Scatter(
@@ -387,7 +402,7 @@ def create_aggregated_bids_plot(
             line=dict(color="orange", width=1.5, shape="hv"),
             hovertemplate=f"Čas: %{{x|%H:%M}}<br>aFRR+ Unavailable: %{{y:.2f}} MW<extra></extra>"
         ))
-    
+
     # aFRR- Unavailable (solid line)
     if 'afrr_minus_unavailable' in df_agg_localized.columns and df_agg_localized['afrr_minus_unavailable'].notna().any():
         fig.add_trace(go.Scatter(
@@ -426,16 +441,16 @@ def create_aggregated_bids_plot(
 
 
 def create_cumulative_bid_curve_plot(
-    df_raw_bids: pd.DataFrame, 
-    selected_date: datetime.date, 
-    bid_curve_filter_hour_utc: int, 
-    day_ahead_line_hour_utc: int, 
+    df_raw_bids: pd.DataFrame,
+    selected_date: datetime.date,
+    bid_curve_filter_hour_utc: int,
+    day_ahead_line_hour_utc: int,
     country: str,
     bid_type: str = "aFRR",
-    display_local_hour: int = None, 
-    df_day_ahead_prices: pd.DataFrame = None, 
-    selected_bid_direction: str = "Oba" 
-) -> tuple[go.Figure, pd.DataFrame]: 
+    display_local_hour: int = None,
+    df_day_ahead_prices: pd.DataFrame = None,
+    selected_bid_direction: str = "Oba"
+) -> tuple[go.Figure, pd.DataFrame]:
     """
     Generuje kumulovanou nabídkovou křivku pro konkrétní hodinu a den (aFRR bids).
     """
@@ -447,15 +462,15 @@ def create_cumulative_bid_curve_plot(
                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
                            font=dict(size=16, color="gray"))
         fig.update_layout(title=f"Kumulovaná nabídková křivka {bid_type} pro {country} - {selected_date.strftime('%d.%m.%Y')} {hour_for_title_fallback:02d}:00")
-        return fig, pd.DataFrame() 
+        return fig, pd.DataFrame()
 
-    hour_for_title = display_local_hour if display_local_hour is not None else bid_curve_filter_hour_utc 
+    hour_for_title = display_local_hour if display_local_hour is not None else bid_curve_filter_hour_utc
 
     start_time_bid_utc_naive = datetime(selected_date.year, selected_date.month, selected_date.day, bid_curve_filter_hour_utc, 0, 0)
-    
+
     hourly_bids = df_raw_bids[
         df_raw_bids['Timestamp'] == start_time_bid_utc_naive
-    ].copy() 
+    ].copy()
 
     if hourly_bids.empty:
         fig = go.Figure()
@@ -463,32 +478,35 @@ def create_cumulative_bid_curve_plot(
                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
                            font=dict(size=16, color="gray"))
         fig.update_layout(title=f"Kumulovaná nabídková křivka {bid_type} pro {country} - {selected_date.strftime('%d.%m.%Y')} {hour_for_title:02d}:00")
-        return fig, pd.DataFrame() 
-    
-    df_up_with_zero, weighted_avg_up = _prepare_afrr_bids_for_plot(hourly_bids[hourly_bids["Direction"] == "Up"].copy(), "Up", "Price (€/MWh)", "Power (MW)")
-    df_down_with_zero, weighted_avg_down = _prepare_afrr_bids_for_plot(hourly_bids[hourly_bids["Direction"] == "Down"].copy(), "Down", "Price (€/MWh)", "Power (MW)")
-    
+        return fig, pd.DataFrame()
+
+    # Oprava: Správné rozbalení návratových hodnot z _prepare_afrr_bids_for_plot
+    df_up_for_plot, median_val_up = _prepare_afrr_bids_for_plot(hourly_bids[hourly_bids["Direction"] == "Up"].copy(), "Up", "Price (€/MWh)", "Power (MW)")
+    df_down_for_plot, median_val_down = _prepare_afrr_bids_for_plot(hourly_bids[hourly_bids["Direction"] == "Down"].copy(), "Down", "Price (€/MWh)", "Power (MW)")
+
     plots_to_combine = []
     if selected_bid_direction == "Oba" or selected_bid_direction == "Up":
-        df_up_plot = df_up_with_zero[['Cumulative Power (MW)', 'Price (€/MWh)']].copy()
-        df_up_plot['Curve Type'] = f'{bid_type} Up (aFRR+)' 
-        plots_to_combine.append(df_up_plot)
+        if not df_up_for_plot.empty:
+            df_up_plot = df_up_for_plot[['Cumulative Power (MW)', 'Price (€/MWh)']].copy()
+            df_up_plot['Curve Type'] = f'{bid_type} Up (aFRR+)'
+            plots_to_combine.append(df_up_plot)
 
     if selected_bid_direction == "Oba" or selected_bid_direction == "Down":
-        df_down_plot = df_down_with_zero[['Cumulative Power (MW)', 'Price (€/MWh)']].copy()
-        df_down_plot['Curve Type'] = f'{bid_type} Down (aFRR-)'
-        plots_to_combine.append(df_down_plot)
+        if not df_down_for_plot.empty:
+            df_down_plot = df_down_for_plot[['Cumulative Power (MW)', 'Price (€/MWh)']].copy()
+            df_down_plot['Curve Type'] = f'{bid_type} Down (aFRR-)'
+            plots_to_combine.append(df_down_plot)
 
-    if not plots_to_combine: 
+    if not plots_to_combine:
         fig = go.Figure()
         fig.add_annotation(text=f"Nejsou data pro směr '{selected_bid_direction}'.",
                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
                            font=dict(size=16, color="gray"))
         fig.update_layout(title=f"Kumulovaná nabídková křivka {bid_type} pro {country} - {selected_date.strftime('%d.%m.%Y')} {hour_for_title:02d}:00")
-        return fig, pd.DataFrame() 
+        return fig, pd.DataFrame()
 
     combined_plot_df = pd.concat(plots_to_combine, ignore_index=True)
-    
+
     fig = px.line(
         combined_plot_df,
         x="Cumulative Power (MW)",
@@ -500,7 +518,7 @@ def create_cumulative_bid_curve_plot(
         line_shape='hv',
         color_discrete_map={ f'{bid_type} Up (aFRR+)': 'royalblue', f'{bid_type} Down (aFRR-)': 'darkgreen' }
     )
-    
+
     # --- PŘIDÁNÍ LOGA JAKO VODOZNAKU ---
     logo_source = get_logo_as_base64("assets/logo.svg")
     if logo_source:
@@ -519,10 +537,11 @@ def create_cumulative_bid_curve_plot(
     # --- KONEC BLOKU S LOGEM ---
 
     if not combined_plot_df.empty:
-        if weighted_avg_up > 0 or weighted_avg_up < 0: 
-            fig.add_hline( y=weighted_avg_up, line_dash="dash", line_color="royalblue", annotation_text=f"aFRR+ průměr: {weighted_avg_up:.2f} €/MWh", annotation_position="top right", annotation_font_color="royalblue", row="all", col="all")
-        if weighted_avg_down > 0 or weighted_avg_down < 0: 
-            fig.add_hline(y=weighted_avg_down, line_dash="dash", line_color="darkgreen", annotation_text=f"aFRR- průměr: {weighted_avg_down:.2f} €/MWh", annotation_position="bottom right", annotation_font_color="darkgreen", row="all", col="all")
+        # Změna z weighted_avg na median_val a textu anotace
+        if median_val_up != 0.0: # Porovnáváme float
+            fig.add_hline( y=median_val_up, line_dash="dash", line_color="royalblue", annotation_text=f"aFRR+ medián: {median_val_up:.2f} €/MWh", annotation_position="top right", annotation_font_color="royalblue", row="all", col="all")
+        if median_val_down != 0.0: # Porovnáváme float
+            fig.add_hline(y=median_val_down, line_dash="dash", line_color="darkgreen", annotation_text=f"aFRR- medián: {median_val_down:.2f} €/MWh", annotation_position="bottom right", annotation_font_color="darkgreen", row="all", col="all")
 
     if df_day_ahead_prices is not None and not df_day_ahead_prices.empty:
         target_timestamp_utc_naive = datetime(selected_date.year, selected_date.month, selected_date.day, day_ahead_line_hour_utc, 0, 0)
@@ -538,75 +557,148 @@ def create_cumulative_bid_curve_plot(
     )
     return fig, combined_plot_df
 
+
 def create_cumulative_procured_capacity_curve_plot(
-    df_raw_capacity: pd.DataFrame, 
-    selected_date: datetime.date, 
-    selected_hour_utc: int, 
+    df_raw_capacity: pd.DataFrame,
+    selected_date: datetime.date,
+    selected_hour_utc: int, # Toto je UTC hodina odpovídající lokální hodině ze slideru
     country: str,
     display_local_hour: int = None,
-    show_weighted_average: bool = False 
+    show_weighted_average: bool = False,
+    user_tz_str: str = "Europe/Prague" # <--- Nyní je tento parametr předáván!
 ) -> tuple[go.Figure, pd.DataFrame]:
     """
     Generuje kumulovanou nabídkovou křivku pro rezervovanou kapacitu pro konkrétní hodinu.
+    Dynamicky zohledňuje změnu v dostupnosti dat (před/po 3.9.2025) s řízeným fallbackem.
+    Upozornění se zobrazuje POUZE, pokud nejsou dostupná VŮBEC žádná data pro daný den.
     """
     hour_for_title_fallback = display_local_hour if display_local_hour is not None else selected_hour_utc
 
-    if df_raw_capacity.empty:
-        fig = go.Figure()
-        fig.add_annotation(text="Nejsou dostupná data pro rezervovanou kapacitu.",
-                           xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
-                           font=dict(size=16, color="gray"))
-        fig.update_layout(title=f"Kumulovaná nabídková křivka kapacity pro {country} - {selected_date.strftime('%d.%m.%Y')} {hour_for_title_fallback:02d}:00")
-        return fig, pd.DataFrame() 
+    # Definice zlomového data pro změnu struktury dat
+    cutoff_date_for_4hr_blocks = datetime(2025, 9, 3).date()
 
-    hour_for_title = display_local_hour if display_local_hour is not None else selected_hour_utc
+    # Inicializace proměnných
+    info_message_for_user = "" # Zpráva pro uživatele, pokud je potřeba
+    
+    data_for_selected_date = df_raw_capacity[df_raw_capacity['Timestamp'].dt.date == selected_date]
+    hourly_capacity = pd.DataFrame() # Pro uložení nalezených dat po filtraci
+    actual_hour_used_for_data = None # Hodina (UTC) pro kterou se našla data
 
-    start_time_utc_naive = datetime(selected_date.year, selected_date.month, selected_date.day, selected_hour_utc, 0, 0)
-    hourly_capacity = df_raw_capacity[df_raw_capacity['Timestamp'] == start_time_utc_naive].copy() 
+    # --- Logika pro nalezení dat a určení upozornění ---
+    # Nejprve zjistíme, jestli vůbec existují nějaké UTC hodiny pro dané datum v datech
+    available_utc_hours_for_date = sorted(data_for_selected_date['Timestamp'].dt.hour.unique())
 
+    if selected_date < cutoff_date_for_4hr_blocks:
+        # --- SCÉNÁŘ: Starší data (před 3.9.2025) - Denní nabídky, stačí jakákoli data pro den ---
+        if not data_for_selected_date.empty:
+            # Vezmeme data pro první dostupnou hodinu pro tento den
+            first_available_utc_hour = available_utc_hours_for_date[0]
+            start_time_utc_naive = datetime(selected_date.year, selected_date.month, selected_date.day, first_available_utc_hour, 0, 0)
+            hourly_capacity = data_for_selected_date[data_for_selected_date['Timestamp'] == start_time_utc_naive].copy()
+            
+            if not hourly_capacity.empty:
+                actual_hour_used_for_data = first_available_utc_hour
+                # NOVÁ LOGIKA: Žádné upozornění, pokud se data najdou pro starší datum.
+            # else: hourly_capacity je prázdná, handled níže v Kroku 4
+        else:
+            # Pro starší datum nejsou k dispozici vůbec žádná data
+            info_message_for_user = f"Nejsou dostupná data pro rezervovanou kapacitu pro vybrané datum ({selected_date.strftime('%d.%m.%Y')})."
+
+    else:
+        # --- SCÉNÁŘ: Novější data (od 3.9.2025 včetně) - 4hodinové bloky ---
+        if available_utc_hours_for_date:
+            # Najdeme nejbližší dostupnou hodinu, která je menší nebo rovna selected_hour_utc
+            candidates = [h for h in available_utc_hours_for_date if h <= selected_hour_utc]
+            target_hour_to_try_utc = None
+            if candidates:
+                target_hour_to_try_utc = max(candidates)
+            elif available_utc_hours_for_date: # Pokud je selected_hour_utc nižší než nejnižší dostupná hodina
+                target_hour_to_try_utc = min(available_utc_hours_for_date)
+            
+            if target_hour_to_try_utc is not None:
+                start_time_utc_naive = datetime(selected_date.year, selected_date.month, selected_date.day, target_hour_to_try_utc, 0, 0)
+                hourly_capacity = data_for_selected_date[data_for_selected_date['Timestamp'] == start_time_utc_naive].copy()
+                
+                if not hourly_capacity.empty:
+                    actual_hour_used_for_data = target_hour_to_try_utc
+                    # NOVÁ LOGIKA: Žádné upozornění, pokud se data najdou pro zaokrouhlenou hodinu u novějších dat.
+                # else: hourly_capacity je prázdná, handled níže v Kroku 4
+        else:
+            # Žádné hodiny nejsou dostupné pro dané novější datum
+            info_message_for_user = f"Nejsou dostupná data pro rezervovanou kapacitu pro vybrané datum ({selected_date.strftime('%d.%m.%Y')})."
+
+
+    # --- Krok 4: Pokud po všech pokusech nejsou žádná data, vrátíme prázdný graf ---
     if hourly_capacity.empty:
         fig = go.Figure()
-        fig.add_annotation(text="Nejsou dostupná data pro rezervovanou kapacitu pro vybranou hodinu.",
+        
+        title_text = f"Kumulovaná nabídková křivka kapacity pro {country} - {selected_date.strftime('%d.%m.%Y')} {display_local_hour:02d}:00"
+        if info_message_for_user: # Zpráva se zobrazí, pokud nebyla nalezena data vůbec pro den
+            title_text += f"<br><sup><span style='color:red;'>{info_message_for_user}</span></sup>"
+        else: # Mělo by být pokryto výše, ale jako dodatečná pojistka
+            title_text += f"<br><sup><span style='color:red;'>Nejsou dostupná žádná data rezervovaného výkonu pro tento den.</span></sup>"
+
+
+        fig.add_annotation(text="Nejsou dostupná data pro vykreslení.", # Obecná zpráva uvnitř grafu
                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
-                           font=dict(size=16, color="gray"))
-        fig.update_layout(title=f"Kumulovaná nabídková křivka kapacity pro {country} - {selected_date.strftime('%d.%m.%Y')} {hour_for_title:02d}:00")
-        return fig, pd.DataFrame() 
-    
+                           font=dict(size=12, color="gray"))
+        fig.update_layout(title=title_text)
+        return fig, pd.DataFrame()
+
+    # --- Krok 5: Pokračování s vykreslením grafu, pokud data existují ---
+    # `info_message_for_user` nyní zůstane prázdná, pokud byla data nalezena (bez ohledu na typ data/zaokrouhlení)
+    # Zpráva se nastaví jen v Kroku 4, pokud nejsou data vůbec pro daný den.
+
     df_up_with_zero, weighted_avg_up = _prepare_capacity_for_plot(hourly_capacity[hourly_capacity["Direction"] == "Up"].copy(), "Up", "Capacity Price (EUR/MW)", "Capacity (MW)")
     df_down_with_zero, weighted_avg_down = _prepare_capacity_for_plot(hourly_capacity[hourly_capacity["Direction"] == "Down"].copy(), "Down", "Capacity Price (EUR/MW)", "Capacity (MW)")
-    
-    plots_to_combine = []
-    
-    df_up_plot = df_up_with_zero[['Cumulative Capacity (MW)', 'Capacity Price (EUR/MW)']].copy()
-    df_up_plot['Curve Type'] = 'RV Up (aFRR+)'
-    plots_to_combine.append(df_up_plot)
 
-    df_down_plot = df_down_with_zero[['Cumulative Capacity (MW)', 'Capacity Price (EUR/MW)']].copy()
-    df_down_plot['Curve Type'] = 'RV Down (aFRR-)'
-    plots_to_combine.append(df_down_plot)
+    plots_to_combine = []
+
+    if not df_up_with_zero.empty:
+        df_up_plot = df_up_with_zero[['Cumulative Capacity (MW)', 'Capacity Price (EUR/MW)']].copy()
+        df_up_plot['Curve Type'] = 'RV Up (aFRR+)'
+        plots_to_combine.append(df_up_plot)
+
+    if not df_down_with_zero.empty:
+        df_down_plot = df_down_with_zero[['Cumulative Capacity (MW)', 'Capacity Price (EUR/MW)']].copy()
+        df_down_plot['Curve Type'] = 'RV Down (aFRR-)'
+        plots_to_combine.append(df_down_plot)
 
     if not plots_to_combine:
         fig = go.Figure()
-        fig.add_annotation(text="Nejsou data kapacity pro zobrazení.",
+        # Zde se info_message_for_user zobrazí, pokud jsou prázdné ploty (např. chybí jeden směr)
+        title_text = f"Kumulovaná nabídková křivka kapacity pro {country} - {selected_date.strftime('%d.%m.%Y')} {display_local_hour:02d}:00"
+        if info_message_for_user:
+            title_text += f"<br><sup><span style='color:red;'>{info_message_for_user}</span></sup>"
+        else:
+            title_text += f"<br><sup><span style='color:red;'>Nejsou data kapacity pro zobrazení pro žádný směr.</span></sup>"
+
+
+        fig.add_annotation(text="Nejsou data kapacity pro zobrazení pro žádný směr.",
                            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
-                           font=dict(size=16, color="gray"))
-        fig.update_layout(title=f"Kumulovaná nabídková křivka kapacity pro {country} - {selected_date.strftime('%d.%m.%Y')} {hour_for_title:02d}:00")
+                           font=dict(size=12, color="gray"))
+        fig.update_layout(title=title_text)
         return fig, pd.DataFrame()
 
     combined_plot_df = pd.concat(plots_to_combine, ignore_index=True)
-    
+
+    # --- Úprava titulků grafu pro začlenění upozornění ---
+    # Hlavní titulek vždy s display_local_hour
+    title_text = f"Denní nabídková křivka RV pro {country} - {selected_date.strftime('%d.%m.%Y')} {display_local_hour:02d}:00"
+    # info_message_for_user se zde nedostane, pokud se data pro graf našla a nejsou splněny podmínky pro její nastavení.
+
     fig = px.line(
         combined_plot_df,
         x="Cumulative Capacity (MW)",
         y="Capacity Price (EUR/MW)",
         color="Curve Type",
-        title=f"Denní nabídková křivka RV pro {country} - {selected_date.strftime('%d.%m.%Y')} {hour_for_title:02d}:00",
-        labels={ "Cumulative Capacity (MW)": "Kumulovaný výkon (MW)", "Capacity Price (EUR/MW)": "Cena (€/MW/h)", "Curve Type": ""},
+        title=title_text, # Zde je nový dynamický titulek (již bez zbytečného upozornění)
+        labels={ "Cumulative Capacity (MW)": "Kumulovaný výkon (MW)", "Price (€/MW/h)": "Cena (€/MW/h)", "Curve Type": ""},
         hover_data={"Capacity Price (EUR/MW)": ":.2f", "Cumulative Capacity (MW)": ":.2f"},
         line_shape='hv',
         color_discrete_map={ 'RV Up (aFRR+)': 'royalblue', 'RV Down (aFRR-)': 'darkgreen'}
     )
-    
+
     # --- PŘIDÁNÍ LOGA JAKO VODOZNAKU ---
     logo_source = get_logo_as_base64("assets/logo.svg")
     if logo_source:
@@ -623,31 +715,32 @@ def create_cumulative_procured_capacity_curve_plot(
             )
         )
     # --- KONEC BLOKU S LOGEM ---
-    
-    if show_weighted_average and not combined_plot_df.empty: 
+
+    if show_weighted_average and not combined_plot_df.empty:
         if weighted_avg_up > weighted_avg_down: up_yanchor, down_yanchor = "bottom", "top"
         else: up_yanchor, down_yanchor = "top", "bottom"
 
-        if weighted_avg_up != 0: 
+        if weighted_avg_up != 0:
             fig.add_hline(y=weighted_avg_up, line_dash="dash", line_color="firebrick", row="all", col="all")
             fig.add_annotation(xref="paper", x=1, y=weighted_avg_up, xanchor="right", yanchor=up_yanchor, text=f"RV+ průměr: {weighted_avg_up:.2f} €/MW", font=dict(color="firebrick"), bgcolor="rgba(255,255,255,0.8)", showarrow=False)
-        if weighted_avg_down != 0: 
+        if weighted_avg_down != 0:
             fig.add_hline(y=weighted_avg_down, line_dash="dash", line_color="darkviolet", row="all", col="all")
             fig.add_annotation(xref="paper", x=1, y=weighted_avg_down, xanchor="right", yanchor=down_yanchor, text=f"RV- průměr: {weighted_avg_down:.2f} €/MW", font=dict(color="darkviolet"), bgcolor="rgba(255,255,255,0.8)", showarrow=False)
 
-    y_min_default, y_max_default = -2, 50 
+    y_min_default, y_max_default = -2, 50
     valid_prices = combined_plot_df['Capacity Price (EUR/MW)'].dropna()
     if not valid_prices.empty:
         min_price, max_price = valid_prices.min(), valid_prices.max()
-        y_min, y_max = min(-2, min_price - 2), max_price + 2 
-        if y_max <= y_min: y_max = y_min + 10 
-    else: 
+        y_min, y_max = min(-2, min_price - 2), max_price + 2
+        if y_max <= y_min: y_max = y_min + 10
+    else:
         y_min, y_max = y_min_default, y_max_default
-    
+
     fig.update_layout(yaxis=dict(range=[y_min, y_max]))
-    
+
     fig.update_layout(
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5)
     )
-    return fig, combined_plot_df
+    
+    return fig, pd.DataFrame()

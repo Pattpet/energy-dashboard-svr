@@ -153,7 +153,7 @@ def fetch_balancing_bids_for_day_modular(
     
     country_eic_map = {
         'CZ': '10YCZ-CEPS-----N',
-        'DE': '10Y1001A1001A83F',
+        'PL': '10YPL-AREA-----S',
     }
     connecting_domain = country_eic_map.get(country_code, None)
 
@@ -353,7 +353,7 @@ def fetch_afrr_activation_prices_data(
 
     country_eic_map = {
         'CZ': '10YCZ-CEPS-----N',
-        'DE': '10Y1001A1001A83F',
+        'PL': '10YPL-AREA-----S',
     }
     control_area_domain = country_eic_map.get(country_code, None)
 
@@ -361,7 +361,7 @@ def fetch_afrr_activation_prices_data(
     # což způsobilo NameError. Zajišťuji jejich přítomnost zde.
     country_timezones_map_for_loader = {
         'CZ': 'Europe/Prague',
-        'DE': 'Europe/Berlin',
+        'PL': 'Europe/Berlin',
     }
     local_tz_str = country_timezones_map_for_loader.get(country_code, 'UTC') 
 
@@ -508,7 +508,7 @@ def fetch_procured_capacity_data(
     
     country_eic_map = {
         'CZ': '10YCZ-CEPS-----N',
-        'DE': '10Y1001A1001A83F',
+        'PL': '10YPL-AREA-----S',
     }
     area_domain = country_eic_map.get(country_code, None)
 
@@ -704,7 +704,7 @@ def _fetch_single_aggregated_bids_data(
     
     country_eic_map = {
         'CZ': '10YCZ-CEPS-----N',
-        'DE': '10Y1001A1001A83F',
+        'PL': '10YPL-AREA-----S',
     }
     area_domain = country_eic_map.get(country_code, None)
 
@@ -760,7 +760,7 @@ def _fetch_single_aggregated_bids_data(
     
     country_timezones_map_for_loader = {
         'CZ': 'Europe/Prague',
-        'DE': 'Europe/Berlin',
+        'PL': 'Europe/Berlin',
     }
     local_tz_str = country_timezones_map_for_loader.get(country_code, 'UTC') 
     temp_local_tz = pytz.timezone(local_tz_str)
