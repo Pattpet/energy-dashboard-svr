@@ -119,7 +119,7 @@ st.sidebar.markdown(
 
 st.sidebar.markdown("") 
 st.sidebar.markdown(
-    '<span style="color: grey; font-size: small;">Last updated: 2025-04-11</span>',
+    '<span style="color: grey; font-size: small;">Last updated: 2025-11-04</span>',
     unsafe_allow_html=True
 )
 
