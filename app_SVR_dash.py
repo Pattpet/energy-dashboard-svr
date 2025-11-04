@@ -1,4 +1,4 @@
-# app_SVR_dash.py (OPRAVENO: PŘÍMÝ IMPORT eic_codes a pevná volba zemí pro ladění)
+# app_SVR_dash.py (OPRAVENO: PŘÍMÝ IMPORT eic_codes ZNOVU AKTIVOVÁN, pevná volba zemí pro ladění)
 
 import streamlit as st
 import pandas as pd
@@ -10,7 +10,7 @@ import base64
 # Import modulů
 import data_loader as dl 
 import plot_generator as pg 
-import eic_codes # ZMĚNA ZDE: PŘÍMÝ IMPORT eic_codes (pro list_keys, i když je teď omezený)
+import eic_codes # ZNOVU AKTIVOVÁNO: PŘÍMÝ IMPORT eic_codes
 
 # TOTO MUSÍ BÝT ABSOLUTNĚ PRVNÍ PŘÍKAZ STREAMLITU V CELÉM SKRIPTU.
 st.set_page_config(
@@ -61,13 +61,11 @@ selected_date = st.sidebar.date_input(
     "Vyberte datum pro zobrazení dat:",
     value=today,
     max_value=max_allowed_date,
-    min_value=datetime(2019, 1, 1).date() # Zabrání výběru příliš starých dat
+    min_value=datetime(2024, 1, 1).date() # Zabrání výběru příliš starých dat
 )
 
 # Vstup pro výběr země
-country_options =  ["CZ", 
-                    #"AT",
-                    ]  # Pevná volba zemí pro ladění
+country_options =  ["CZ", ]  # Pevná volba zemí pro ladění
 default_country_index = country_options.index('CZ') if 'CZ' in country_options else 0
 selected_country = st.sidebar.selectbox(
     "Vyberte zemi:",
@@ -116,6 +114,12 @@ else:
 st.sidebar.markdown("---") 
 st.sidebar.markdown(
     f'<span style="color: rgb(255, 153, 0);">by <b><a href="https://www.linkedin.com/in/patrikpetovsky/" target="_blank" style="color: rgb(255, 153, 0); text-decoration: none;">Patrik Petovsky</a></b> <img src="https://upload.wikimedia.org/wikipedia/commons/c/ca/LinkedIn_logo_initials.png" width="20" height="20" style="vertical-align: middle;"></span>', 
+    unsafe_allow_html=True
+)
+
+st.sidebar.markdown("") 
+st.sidebar.markdown(
+    '<span style="color: grey; font-size: small;">Last updated: 2025-04-11</span>',
     unsafe_allow_html=True
 )
 

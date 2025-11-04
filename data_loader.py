@@ -1,15 +1,17 @@
-# data_loader.py (OPRAVENÁ A KOMPLETNÍ VERZE, znovu)
+# data_loader.py (OPRAVENO: Dynamické rozlišení pro DA ceny, PŘÍMÝ IMPORT eic_codes a použití eic_codes.get_eic() pro všechny API volání)
 
 import streamlit as st
 import pandas as pd
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date # Přidán date pro cutoff_date
 import pytz 
 import requests
 import io
 import zipfile
 from entsoe import EntsoePandasClient 
 import logging
+
+import eic_codes # PŘÍMÝ IMPORT eic_codes
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -28,17 +30,30 @@ def get_entsoe_client():
 
 # --- Funkce pro načítání denních cen ---
 @st.cache_data(ttl=3600)
-def fetch_day_ahead_prices_data(country_code: str, date: datetime.date) -> pd.DataFrame:
+def fetch_day_ahead_prices_data(country_code: str, target_date_param: datetime.date) -> pd.DataFrame: # ZMĚNA: Přejmenován parametr 'date'
     client = get_entsoe_client() 
-    start_ts = pd.Timestamp(f'{date} 00:00:00', tz='Europe/Brussels')
-    end_ts = pd.Timestamp(f'{date + timedelta(days=1)} 00:00:00', tz='Europe/Brussels')
+    start_ts = pd.Timestamp(f'{target_date_param} 00:00:00', tz='Europe/Brussels')
+    end_ts = pd.Timestamp(f'{target_date_param + timedelta(days=1)} 00:00:00', tz='Europe/Brussels')
+
+    # Definice zlomového data pro 15minutové rozlišení
+    # Nyní používáme třídu date, která je importována jako 'date' (malé 'd')
+    cutoff_date_15min_resolution = date(2025, 10, 1) # ZMĚNA: Používáme přímo 'date' z importu
+
+    query_params = {
+        'country_code': country_code,
+        'start': start_ts,
+        'end': end_ts
+    }
+
+    if target_date_param >= cutoff_date_15min_resolution: # ZMĚNA: Používáme target_date_param
+        query_params['resolution'] = "15min"
+        logging.info(f"Načítám Day-Ahead ceny pro {country_code}, {target_date_param} s 15min rozlišením.") # ZMĚNA
+    else:
+        logging.info(f"Načítám Day-Ahead ceny pro {country_code}, {target_date_param} s hodinovým rozlišením.") # ZMĚNA
+
 
     try:
-        df_prices_series = client.query_day_ahead_prices(
-            country_code=country_code,
-            start=start_ts,
-            end=end_ts
-        )
+        df_prices_series = client.query_day_ahead_prices(**query_params)
         
         df_prices = df_prices_series.reset_index(name='Price')
         df_prices = df_prices.rename(columns={'index': 'Time'})
@@ -51,7 +66,7 @@ def fetch_day_ahead_prices_data(country_code: str, date: datetime.date) -> pd.Da
         
         return df_prices
     except Exception as e:
-        logging.error(f"Nepodařilo se načíst data pro denní trh ({country_code}, {date}): {e}")
+        logging.error(f"Nepodařilo se načíst data pro denní trh ({country_code}, {target_date_param}): {e}") # ZMĚNA
         return pd.DataFrame()
 
 
@@ -90,6 +105,7 @@ def _parse_reserve_bid_xml_modular(xml_data_str: str,
             resolution_str = period.findtext('rbd:resolution', default="PT15M", namespaces=ns) 
             
             if start_time_str is None or resolution_str is None:
+                logging.warning(f"Chybí start_time nebo resolution v Period elementu pro Reserve Bid.")
                 continue
 
             step = timedelta(minutes=15)
@@ -100,7 +116,7 @@ def _parse_reserve_bid_xml_modular(xml_data_str: str,
             try:
                 start_datetime = datetime.strptime(start_time_str, "%Y-%m-%dT%H:%MZ")
             except ValueError:
-                logging.warning(f"Nelze parsovat start_time: {start_time_str}")
+                logging.warning(f"Nelze parsovat start_time: {start_time_str} pro Reserve Bid.")
                 continue
                 
             for point in period.findall(".//rbd:Point", ns):
@@ -121,6 +137,7 @@ def _parse_reserve_bid_xml_modular(xml_data_str: str,
                 price = float(price_str) if price_str is not None else 0.0 
                 
                 if power is None:
+                    logging.debug(f"Přeskočen bod pro Reserve Bid kvůli chybějícímu Power: ID={bid_id}, Time={start_time_str}, Pos={position}")
                     continue
 
                 timestamp = start_datetime + (position - 1) * step
@@ -129,7 +146,7 @@ def _parse_reserve_bid_xml_modular(xml_data_str: str,
                     "Timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
                     "Bid ID": bid_id,
                     "Power (MW)": power,
-                    "Price (EUR/MWh)": price, 
+                    "Price (EUR/MWh)": price,
                     "Direction": current_timeseries_direction,
                     "ProcessType": process_type,
                     "ConnectingDomain": connecting_domain
@@ -151,14 +168,10 @@ def fetch_balancing_bids_for_day_modular(
     api_key = st.secrets["entsoe_api"]["token"]
     entsoe_api_url = "https://web-api.tp.entsoe.eu/api"
     
-    country_eic_map = {
-        'CZ': '10YCZ-CEPS-----N',
-        'PL': '10YPL-AREA-----S',
-    }
-    connecting_domain = country_eic_map.get(country_code, None)
+    connecting_domain = eic_codes.get_eic(country_code)
 
     if not connecting_domain:
-        logging.error(f"Nepodporovaný kód země pro balancing bids: {country_code}.")
+        logging.error(f"Nepodporovaný kód země pro balancing bids: {country_code} (EIC kód nenalezen).")
         return pd.DataFrame()
 
     start_period = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0)
@@ -178,6 +191,7 @@ def fetch_balancing_bids_for_day_modular(
     }
     
     all_extracted_data = []
+    xml_str = ""
 
     try:
         response = requests.get(entsoe_api_url, params=params, timeout=90)
@@ -202,11 +216,11 @@ def fetch_balancing_bids_for_day_modular(
                                                     if file_name_l2.lower().endswith('.xml'):
                                                         with zip_file_level2.open(file_name_l2) as xml_file_l2:
                                                             try:
-                                                                xml_data_str = xml_file_l2.read().decode("utf-8")
+                                                                xml_str = xml_file_l2.read().decode("utf-8")
                                                             except UnicodeDecodeError:
-                                                                xml_data_str = xml_file_l2.read().decode("ISO-8859-1", errors='replace')
+                                                                xml_str = xml_file_l2.read().decode("ISO-8859-1", errors='replace')
                                                             
-                                                            parsed_points = _parse_reserve_bid_xml_modular(xml_data_str, process_type, connecting_domain)
+                                                            parsed_points = _parse_reserve_bid_xml_modular(xml_str, process_type, connecting_domain)
                                                             all_extracted_data.extend(parsed_points)
                                                 is_nested_zip_processed = True
                                     except zipfile.BadZipFile:
@@ -216,11 +230,11 @@ def fetch_balancing_bids_for_day_modular(
 
                                 if not is_nested_zip_processed and file_name_l1.lower().endswith('.xml'):
                                     try:
-                                        xml_data_str = bytes_l1.decode("utf-8")
+                                        xml_str = bytes_l1.decode("utf-8")
                                     except UnicodeDecodeError:
-                                        xml_data_str = bytes_l1.decode("ISO-8859-1", errors='replace')
+                                        xml_str = bytes_l1.decode("ISO-8859-1", errors='replace')
                                     
-                                    parsed_points = _parse_reserve_bid_xml_modular(xml_data_str, process_type, connecting_domain)
+                                    parsed_points = _parse_reserve_bid_xml_modular(xml_str, process_type, connecting_domain)
                                     all_extracted_data.extend(parsed_points)
             except zipfile.BadZipFile:
                 logging.error(f"Chyba: Odpověď byla označena jako ZIP, ale není to platný ZIP archiv pro {target_date}.")
@@ -229,25 +243,25 @@ def fetch_balancing_bids_for_day_modular(
         
         elif 'application/xml' in content_type or 'text/xml' in content_type:
             try:
-                xml_data_str = response.content.decode("utf-8")
+                xml_str = response.content.decode("utf-8")
             except UnicodeDecodeError:
-                xml_data_str = response.content.decode("ISO-8859-1", errors='replace')
+                xml_str = response.content.decode("ISO-8859-1", errors='replace')
             
-            if "NoMatchingData" in xml_data_str or "Error_Reason" in xml_data_str :
-                 logging.info(f"API pro balancing bids vrátilo NoMatchingData/Error_Reason pro {target_date}: {xml_data_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
+            if "NoMatchingData" in xml_str or "Error_Reason" in xml_str :
+                 logging.info(f"API pro balancing bids vrátilo NoMatchingData/Error_Reason pro {target_date}: {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
             else:
-                parsed_points = _parse_reserve_bid_xml_modular(xml_data_str, process_type, connecting_domain)
+                parsed_points = _parse_reserve_bid_xml_modular(xml_str, process_type, connecting_domain)
                 all_extracted_data.extend(parsed_points)
         else:
             logging.warning(f"Neočekávaný Content-Type pro balancing bids: {content_type}. Obsah (prvních 200b): {response.content[:200]}")
 
     except requests.exceptions.HTTPError as e:
         error_text = e.response.text[:250].replace(chr(10),'').replace(chr(13),'') if e.response else "No response text"
-        logging.error(f"HTTP Chyba při načítání balancing bids: {e.response.status_code if e.response else 'N/A'} pro {target_date}. Odpověď: {error_text}...")
+        logging.error(f"HTTP Chyba při načítání balancing bids: {e.response.status_code if e.response else 'N/A'} pro {target_date}. Odpověď: {error_text}. XML (prvních 250b): {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
     except requests.exceptions.RequestException as e:
         logging.error(f"Chyba spojení při načítání balancing bids: {e} pro {target_date}.")
     except Exception as e:
-        logging.error(f"Neznámá chyba při stahování/základním zpracování balancing bids pro {target_date}: {e}")
+        logging.error(f"Neznámá chyba při stahování/základním zpracování balancing bids pro {target_date}: {e}. XML (prvních 250b): {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
 
     df_bids = pd.DataFrame(all_extracted_data)
     
@@ -257,11 +271,9 @@ def fetch_balancing_bids_for_day_modular(
 
     if not df_bids.empty:
         df_bids['Timestamp'] = pd.to_datetime(df_bids['Timestamp'], errors='coerce')
-        if not df_bids['Timestamp'].dt.tz is None: 
+        if not df_bids['Timestamp'].dt.tz is None:
             df_bids['Timestamp'] = df_bids['Timestamp'].dt.tz_convert('UTC').dt.tz_localize(None)
         
-        df_bids = df_bids.rename(columns={'Price (EUR/MWh)': 'Price (€/MWh)'})
-
         df_bids = df_bids.dropna(subset=['Timestamp'])
         return df_bids
     else:
@@ -290,6 +302,7 @@ def _parse_activated_balancing_price_xml_modular(xml_data_str: str) -> pd.DataFr
             start_time_str = period.findtext('ns:timeInterval/ns:start', default=None, namespaces=ns)
             resolution_str = period.findtext('ns:resolution', default="PT15M", namespaces=ns)
             if start_time_str is None or resolution_str is None:
+                logging.warning(f"Chybí start_time nebo resolution v Period elementu pro Activated Balancing Price.")
                 continue
             
             start_time_utc_aware = datetime.strptime(start_time_str, "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.UTC)
@@ -312,7 +325,7 @@ def _parse_activated_balancing_price_xml_modular(xml_data_str: str) -> pd.DataFr
                 dt_utc_aware = start_time_utc_aware + (pos - 1) * step
                 
                 data.append({
-                    "Timestamp": dt_utc_aware.replace(tzinfo=None),  
+                    "Timestamp": dt_utc_aware.replace(tzinfo=None),
                     "flowDirection": flow_direction,
                     "activation_price": price
                 })
@@ -339,11 +352,11 @@ def _parse_activated_balancing_price_xml_modular(xml_data_str: str) -> pd.DataFr
 
 @st.cache_data(ttl=3600)
 def fetch_afrr_activation_prices_data(
-    target_date: datetime.date, 
+    target_date: datetime.date,
     country_code: str,
-    business_type: str = "A96", 
-    process_type: str = "A16",  
-    document_type: str = "A84"  
+    business_type: str = "A96",
+    process_type: str = "A16",
+    document_type: str = "A84"
 ) -> pd.DataFrame:
     """
     Načítá a parsuje ceny aktivované regulační energie (aFRR+, aFRR-) pro danou zemi a datum.
@@ -351,22 +364,17 @@ def fetch_afrr_activation_prices_data(
     api_key = st.secrets["entsoe_api"]["token"]
     entsoe_api_url = "https://web-api.tp.entsoe.eu/api"
 
-    country_eic_map = {
-        'CZ': '10YCZ-CEPS-----N',
-        'PL': '10YPL-AREA-----S',
-    }
-    control_area_domain = country_eic_map.get(country_code, None)
+    control_area_domain = eic_codes.get_eic(country_code) # ZDE SE POUŽÍVÁ eic_codes.get_eic()
 
-    # DŮLEŽITÉ: Tyto řádky byly možná vynechány nebo přesunuty při předchozí úpravě,
-    # což způsobilo NameError. Zajišťuji jejich přítomnost zde.
     country_timezones_map_for_loader = {
         'CZ': 'Europe/Prague',
         'PL': 'Europe/Berlin',
+        'AT': 'Europe/Vienna', # NOVÁ ČASOVÁ ZÓNA PRO RAKOUSKO
     }
-    local_tz_str = country_timezones_map_for_loader.get(country_code, 'UTC') 
+    local_tz_str = country_timezones_map_for_loader.get(country_code, 'UTC')
 
     if not control_area_domain:
-        logging.error(f"Nepodporovaný kód země pro aFRR aktivované ceny: {country_code}.")
+        logging.error(f"Nepodporovaný kód země pro aFRR aktivované ceny: {country_code} (EIC kód nenalezen).")
         return pd.DataFrame()
 
     dates_to_fetch = [target_date - timedelta(days=1), target_date]
@@ -389,15 +397,17 @@ def fetch_afrr_activation_prices_data(
             "periodEnd": period_end_str
         }
         
+        xml_str = "" # ZMĚNA ZDE: Inicializace xml_str
+
         try:
             response = requests.get(url=entsoe_api_url, params=params, timeout=60)
-            response.raise_for_status() 
+            response.raise_for_status()
 
-            xml_str = response.content.decode("utf-8", errors="replace")
+            xml_str = response.content.decode("utf-8", errors="replace") # xml_str zde definováno
             
             if "NoMatchingData" in xml_str or "Error_Reason" in xml_str:
                 logging.info(f"API pro aktivované ceny aFRR vrátilo (pro {day_to_fetch}): {xml_str[:250].replace(chr(10), '').replace(chr(13), '')}...")
-                continue 
+                continue
             
             df_day_prices = _parse_activated_balancing_price_xml_modular(xml_str)
             if not df_day_prices.empty:
@@ -405,18 +415,20 @@ def fetch_afrr_activation_prices_data(
 
         except requests.exceptions.HTTPError as e:
             error_text = e.response.text[:250].replace(chr(10),'').replace(chr(13),'') if e.response else "No response text"
-            logging.error(f"HTTP Chyba při načítání aktivovaných cen aFRR (pro {day_to_fetch}): {e.response.status_code if e.response else 'N/A'}. Odpověď: {error_text}...")
+            # Reference na xml_str, nyní bezpečnější díky inicializaci
+            logging.error(f"HTTP Chyba při načítání aktivovaných cen aFRR (pro {day_to_fetch}): {e.response.status_code if e.response else 'N/A'}. Odpověď: {error_text}. XML (prvních 250b): {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
         except requests.exceptions.RequestException as e:
             logging.error(f"Chyba spojení při načítání aktivovaných cen aFRR (pro {day_to_fetch}): {e}.")
         except Exception as e:
-            logging.error(f"Neznámá chyba při stahování/zpracování aktivovaných cen aFRR (pro {day_to_fetch}): {e}.")
+            # Reference na xml_str, nyní bezpečnější díky inicializaci
+            logging.error(f"Neznámá chyba při stahování/zpracování aktivovaných cen aFRR (pro {day_to_fetch}): {e}. XML (prvních 250b): {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
     
     if not all_fetched_data:
         return pd.DataFrame()
 
     df_afrr_prices_raw = pd.concat(all_fetched_data, ignore_index=True)
     
-    temp_local_tz = pytz.timezone(local_tz_str) # <-- Zde je local_tz_str již definována
+    temp_local_tz = pytz.timezone(local_tz_str)
     
     if df_afrr_prices_raw['Timestamp'].dt.tz is not None:
         df_afrr_prices_raw['Timestamp'] = df_afrr_prices_raw['Timestamp'].dt.tz_convert(None)
@@ -454,6 +466,7 @@ def _parse_procured_capacity_xml_modular(xml_data_str: str, process_type: str, a
             start_time_str = period.findtext('bmd:timeInterval/bmd:start', default=None, namespaces=ns)
             resolution_str = period.findtext('bmd:resolution', default="PT15M", namespaces=ns)
             if start_time_str is None or resolution_str is None:
+                logging.warning(f"Chybí start_time nebo resolution v Period elementu pro Procured Capacity.")
                 continue
             step = timedelta(minutes=15)
             if resolution_str in ["PT60M", "P1H"]:
@@ -462,22 +475,27 @@ def _parse_procured_capacity_xml_modular(xml_data_str: str, process_type: str, a
                 step = timedelta(minutes=30)
             elif resolution_str == "PT1M":
                 step = timedelta(minutes=1)
+            
             try:
                 start_datetime = datetime.strptime(start_time_str, "%Y-%m-%dT%H:%MZ")
             except ValueError:
-                logging.warning(f"Nelze parsovat start_time pro kapacitu: {start_time_str}")
+                logging.warning(f"Nelze parsovat start_time: {start_time_str} pro Procured Capacity.")
                 continue
             for point in period.findall(".//bmd:Point", ns):
-                pos_str = point.findtext('bmd:position', default="0", namespaces=ns) 
+                pos_str = point.findtext('bmd:position', default="0", namespaces=ns)
                 position = int(pos_str) if pos_str is not None else 0
-                capacity_str = point.findtext('bmd:quantity', default=None, namespaces=ns) 
-                price_str = point.findtext('bmd:procurement_Price.amount', default=None, namespaces=ns) 
+                capacity_str = point.findtext('bmd:quantity', default=None, namespaces=ns)
+                price_str = point.findtext('bmd:procurement_Price.amount', default=None, namespaces=ns)
                 
                 capacity = float(capacity_str) if capacity_str is not None else None
-                price = float(price_str) if price_str is not None else 0.0 
+                price = float(price_str) if price_str is not None else 0.0
+                
                 if capacity is None:
+                    logging.debug(f"Přeskočen bod pro Procured Capacity kvůli chybějícímu Capacity: ID={timeseries_id}, Time={start_time_str}, Pos={position}")
                     continue
+
                 timestamp = start_datetime + (position - 1) * step
+
                 data_points.append({
                     "Timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
                     "TimeSeries ID": timeseries_id,
@@ -495,9 +513,9 @@ def _parse_procured_capacity_xml_modular(xml_data_str: str, process_type: str, a
 def fetch_procured_capacity_data(
     target_date: datetime.date,
     country_code: str,
-    process_type: str = "A51", 
-    market_agreement_type: str = "A01", 
-    document_type: str = "A15" 
+    process_type: str = "A51",
+    market_agreement_type: str = "A01",
+    document_type: str = "A15"
 ) -> pd.DataFrame:
     """
     Stahuje a parsuje data "Procured balancing reserves" (A15) z ENTSOE-E API.
@@ -506,14 +524,10 @@ def fetch_procured_capacity_data(
     api_key = st.secrets["entsoe_api"]["token"]
     entsoe_api_url = "https://web-api.tp.entsoe.eu/api"
     
-    country_eic_map = {
-        'CZ': '10YCZ-CEPS-----N',
-        'PL': '10YPL-AREA-----S',
-    }
-    area_domain = country_eic_map.get(country_code, None)
+    area_domain = eic_codes.get_eic(country_code)
 
     if not area_domain:
-        logging.error(f"Nepodporovaný kód země pro rezervovanou kapacitu: {country_code}.")
+        logging.error(f"Nepodporovaný kód země pro rezervovanou kapacitu: {country_code} (EIC kód nenalezen).")
         return pd.DataFrame()
 
     start_period = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0)
@@ -533,6 +547,7 @@ def fetch_procured_capacity_data(
     }
     
     all_extracted_data = []
+    xml_str = "" # ZMĚNA ZDE: Inicializace xml_str
 
     try:
         response = requests.get(url=entsoe_api_url, params=params, timeout=90)
@@ -557,11 +572,11 @@ def fetch_procured_capacity_data(
                                                     if file_name_l2.lower().endswith('.xml'):
                                                         with zip_file_level2.open(file_name_l2) as xml_file_l2:
                                                             try:
-                                                                xml_data_str = xml_file_l2.read().decode("utf-8")
+                                                                xml_str = xml_file_l2.read().decode("utf-8") # xml_str zde definováno
                                                             except UnicodeDecodeError:
-                                                                xml_data_str = xml_file_l2.read().decode("ISO-8859-1", errors='replace')
+                                                                xml_str = xml_file_l2.read().decode("ISO-8859-1", errors='replace')
                                                             
-                                                            parsed_points = _parse_procured_capacity_xml_modular(xml_data_str, process_type, area_domain, market_agreement_type)
+                                                            parsed_points = _parse_procured_capacity_xml_modular(xml_str, process_type, area_domain, market_agreement_type)
                                                             all_extracted_data.extend(parsed_points)
                                                 is_nested_zip_processed = True
                                     except zipfile.BadZipFile:
@@ -571,11 +586,11 @@ def fetch_procured_capacity_data(
 
                                 if not is_nested_zip_processed and file_name_l1.lower().endswith('.xml'):
                                     try:
-                                        xml_data_str = bytes_l1.decode("utf-8")
+                                        xml_str = bytes_l1.decode("utf-8") # xml_str zde definováno
                                     except UnicodeDecodeError:
-                                        xml_data_str = bytes_l1.decode("ISO-8859-1", errors='replace')
+                                        xml_str = bytes_l1.decode("ISO-8859-1", errors='replace')
                                     
-                                    parsed_points = _parse_procured_capacity_xml_modular(xml_data_str, process_type, area_domain, market_agreement_type)
+                                    parsed_points = _parse_procured_capacity_xml_modular(xml_str, process_type, area_domain, market_agreement_type)
                                     all_extracted_data.extend(parsed_points)
             except zipfile.BadZipFile:
                 logging.error(f"Chyba: Odpověď byla označena jako ZIP, ale není to platný ZIP archiv pro rezervovanou kapacitu.")
@@ -584,44 +599,51 @@ def fetch_procured_capacity_data(
         
         elif 'application/xml' in content_type or 'text/xml' in content_type:
             try:
-                xml_data_str = response.content.decode("utf-8")
+                xml_str = response.content.decode("utf-8") # xml_str zde definováno
             except UnicodeDecodeError:
-                xml_data_str = response.content.decode("ISO-8859-1", errors='replace')
+                xml_str = response.content.decode("ISO-8859-1", errors='replace')
             
-            if "NoMatchingData" in xml_data_str or "Error_Reason" in xml_data_str :
-                 logging.info(f"API pro rezervovanou kapacitu vrátilo NoMatchingData/Error_Reason (pro {target_date}): {xml_data_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
+            if "NoMatchingData" in xml_str or "Error_Reason" in xml_str :
+                 logging.info(f"API pro rezervovanou kapacitu vrátilo NoMatchingData/Error_Reason (pro {target_date}): {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
             else:
-                parsed_points = _parse_procured_capacity_xml_modular(xml_data_str, process_type, area_domain, market_agreement_type)
+                parsed_points = _parse_procured_capacity_xml_modular(xml_str, process_type, area_domain, market_agreement_type)
                 all_extracted_data.extend(parsed_points)
         else:
             logging.warning(f"Neočekávaný Content-Type pro rezervovanou kapacitu: {content_type}. Obsah (prvních 200b): {response.content[:200]}")
 
     except requests.exceptions.HTTPError as e:
         error_text = e.response.text[:250].replace(chr(10),'').replace(chr(13),'') if e.response else "No response text"
-        logging.error(f"HTTP Chyba při načítání rezervované kapacity: {e.response.status_code if e.response else 'N/A'} pro {target_date}. Odpověď: {error_text}...")
+        # Reference na xml_str, nyní bezpečnější díky inicializaci
+        logging.error(f"HTTP Chyba při načítání rezervované kapacity: {e.response.status_code if e.response else 'N/A'} pro {target_date}. Odpověď: {error_text}. XML (prvních 250b): {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
     except requests.exceptions.RequestException as e:
         logging.error(f"Chyba spojení při načítání rezervované kapacity: {e} pro {target_date}.")
     except Exception as e:
-        logging.error(f"Neznámá chyba při stahování/základním zpracování pro rezervovanou kapacitu pro {target_date}: {e}")
+        # Reference na xml_str, nyní bezpečnější díky inicializaci
+        logging.error(f"Neznámá chyba při stahování/základním zpracování pro rezervovanou kapacitu pro {target_date}: {e}. XML (prvních 250b): {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
 
     df_capacity = pd.DataFrame(all_extracted_data)
     
-    if not df_capacity.empty and 'Timestamp' not in df_capacity.columns:
-        logging.error("Chyba: 'Timestamp' sloupec chybí v DataFrame z rezervované kapacity!")
+    # NOVÁ KONTROLA: Logujeme, pokud je DataFrame prázdný a vrátíme ho.
+    # To umožní plot_generatoru zpracovat prázdný DataFrame a vypsat uživatelskou zprávu.
+    if df_capacity.empty:
+        logging.info(f"fetch_procured_capacity_data pro {country_code}, {target_date} vrátila prázdný DataFrame.")
+        return pd.DataFrame()
+
+    if 'Timestamp' not in df_capacity.columns:
+        logging.error("Chyba: 'Timestamp' sloupec chybí v DataFrame z rezervované kapacity po parsování! Sloupce: %s", df_capacity.columns.tolist())
         return pd.DataFrame()
 
     if not df_capacity.empty:
         df_capacity['Timestamp'] = pd.to_datetime(df_capacity['Timestamp'], errors='coerce')
-        if not df_capacity['Timestamp'].dt.tz is None: 
+        if not df_capacity['Timestamp'].dt.tz is None:
             df_capacity['Timestamp'] = df_capacity['Timestamp'].dt.tz_convert('UTC').dt.tz_localize(None)
         
         df_capacity = df_capacity.dropna(subset=['Timestamp'])
         return df_capacity
-    else:
+    else: # Toto else by nemělo nastat kvůli kontrole na .empty výše, ale pro jistotu
         return pd.DataFrame()
 
 # --- POMOCNÉ FUNKCE PRO AGREGÁTOVANÉ NABÍDKY (A24) ---
-# Tuto funkci bylo třeba přesunout na vyšší úroveň, aby byla dostupná pro _fetch_single_aggregated_bids_data
 def _parse_aggregated_bids_xml_modular(xml_data_str: str) -> pd.DataFrame:
     """
     Parsuje XML obsah pro agregované nabídky (A24).
@@ -642,6 +664,7 @@ def _parse_aggregated_bids_xml_modular(xml_data_str: str) -> pd.DataFrame:
             start_time_str = period.findtext('ns:timeInterval/ns:start', default=None, namespaces=ns)
             resolution_str = period.findtext('ns:resolution', default="PT15M", namespaces=ns)
             if start_time_str is None or resolution_str is None:
+                logging.warning(f"Chybí start_time nebo resolution v Period elementu pro Aggregated Bids.")
                 continue
             
             start_time_utc_aware = datetime.strptime(start_time_str, "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.UTC)
@@ -681,20 +704,17 @@ def _parse_aggregated_bids_xml_modular(xml_data_str: str) -> pd.DataFrame:
 
 # Pomocná funkce pro vyplnění NaN offered hodnot
 def _fill_offered_nearest_modular(df: pd.DataFrame) -> pd.DataFrame:
-    for col in ["afrr_plus_offered", "afrr_minus_offered"]:
+    for col in ["afrr_plus_offered", "afrr_plus_activated", "afrr_plus_unavailable", "afrr_minus_offered", "afrr_minus_activated", "afrr_minus_unavailable"]: # Doplněny všechny sloupce
         if col in df.columns:
             df[col] = df[col].interpolate(method="nearest", limit_direction="both")
     return df
 
-# --- PŮVODNÍ FUNKCE PRO NAČÍTÁNÍ AGREGÁTOVANÝCH NABÍDEK (A24) ---
-# Tuto funkci budeme volat z nové wrapper funkce fetch_all_aggregated_bids_data
-# aby byla stale cachovana a s logikou parsovani a cisteni.
 @st.cache_data(ttl=3600)
 def _fetch_single_aggregated_bids_data(
-    target_date: datetime.date, 
+    target_date: datetime.date,
     country_code: str,
-    process_type: str, 
-    document_type: str = "A24" 
+    process_type: str,
+    document_type: str = "A24"
 ) -> pd.DataFrame:
     """
     Načítá a parsuje agregované nabídky (A24) pro danou zemi a datum pro JEDEN process_type.
@@ -702,18 +722,15 @@ def _fetch_single_aggregated_bids_data(
     api_key = st.secrets["entsoe_api"]["token"]
     entsoe_api_url = "https://web-api.tp.entsoe.eu/api"
     
-    country_eic_map = {
-        'CZ': '10YCZ-CEPS-----N',
-        'PL': '10YPL-AREA-----S',
-    }
-    area_domain = country_eic_map.get(country_code, None)
+    area_domain = eic_codes.get_eic(country_code)
 
     if not area_domain:
-        logging.error(f"Nepodporovaný kód země pro agregované nabídky: {country_code}.")
+        logging.error(f"Nepodporovaný kód země pro agregované nabídky: {country_code} (EIC kód nenalezen).")
         return pd.DataFrame()
 
     dates_to_fetch = [target_date - timedelta(days=1), target_date]
     all_fetched_data = []
+    xml_str = "" # ZMĚNA ZDE: Inicializace xml_str
 
     for day_to_fetch in dates_to_fetch:
         start_period = datetime(day_to_fetch.year, day_to_fetch.month, day_to_fetch.day, 0, 0, 0)
@@ -735,25 +752,28 @@ def _fetch_single_aggregated_bids_data(
             response = requests.get(url=entsoe_api_url, params=params, timeout=60)
             response.raise_for_status()
 
-            xml_str = response.content.decode("utf-8", errors="replace")
+            xml_str = response.content.decode("utf-8", errors="replace") # xml_str zde definováno
             
             if "NoMatchingData" in xml_str or "Error_Reason" in xml_str:
                 logging.info(f"API pro agregované nabídky vrátilo (pro {day_to_fetch}, {process_type}): {xml_str[:250].replace(chr(10), '').replace(chr(13), '')}...")
-                continue 
+                continue
             
-            df_day_bids = _parse_aggregated_bids_xml_modular(xml_str) # <-- Zde se volá funkce
+            df_day_bids = _parse_aggregated_bids_xml_modular(xml_str)
             if not df_day_bids.empty:
                 all_fetched_data.append(df_day_bids)
 
         except requests.exceptions.HTTPError as e:
             error_text = e.response.text[:250].replace(chr(10),'').replace(chr(13),'') if e.response else "No response text"
-            logging.error(f"HTTP Chyba při načítání agregovaných nabídek (pro {day_to_fetch}, {process_type}): {e.response.status_code if e.response else 'N/A'}. Odpověď: {error_text}...")
+            # Reference na xml_str, nyní bezpečnější díky inicializaci
+            logging.error(f"HTTP Chyba při načítání agregovaných nabídek (pro {day_to_fetch}, {process_type}): {e.response.status_code if e.response else 'N/A'}. Odpověď: {error_text}. XML (prvních 250b): {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
         except requests.exceptions.RequestException as e:
             logging.error(f"Chyba spojení při načítání agregovaných nabídek (pro {day_to_fetch}, {process_type}): {e}.")
         except Exception as e:
-            logging.error(f"Neznámá chyba při stahování/zpracování agregovaných nabídek (pro {day_to_fetch}, {process_type}): {e}.")
+            # Reference na xml_str, nyní bezpečnější díky inicializaci
+            logging.error(f"Neznámá chyba při stahování/zpracování agregovaných nabídek (pro {day_to_fetch}, {process_type}): {e}. XML (prvních 250b): {xml_str[:250].replace(chr(10),'').replace(chr(13),'')}...")
     
     if not all_fetched_data:
+        logging.info(f"_fetch_single_aggregated_bids_data pro {country_code}, {target_date}, {process_type} vrátila prázdný DataFrame.")
         return pd.DataFrame()
 
     df_agg_bids_raw = pd.concat(all_fetched_data, ignore_index=True)
@@ -761,8 +781,9 @@ def _fetch_single_aggregated_bids_data(
     country_timezones_map_for_loader = {
         'CZ': 'Europe/Prague',
         'PL': 'Europe/Berlin',
+        'AT': 'Europe/Vienna', # NOVÁ ČASOVÁ ZÓNA PRO RAKOUSKO
     }
-    local_tz_str = country_timezones_map_for_loader.get(country_code, 'UTC') 
+    local_tz_str = country_timezones_map_for_loader.get(country_code, 'UTC')
     temp_local_tz = pytz.timezone(local_tz_str)
     
     if df_agg_bids_raw['Timestamp'].dt.tz is not None:
@@ -808,7 +829,6 @@ def _fetch_single_aggregated_bids_data(
     else:
         return pd.DataFrame()
 
-# --- NOVÁ FUNKCE: Wrapper pro načítání obou typů agregovaných nabídek ---
 @st.cache_data(ttl=3600)
 def fetch_all_aggregated_bids_data(
     target_date: datetime.date,
